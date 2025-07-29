@@ -1,0 +1,210 @@
+import React, { useEffect, useState, useCallback } from "react";
+import axios from "axios";
+import { useTable } from "react-table";
+
+const inferSeverity = (alert) => {
+  const description = alert.description?.toLowerCase() || "";
+  const ttp = alert.ttp?.toLowerCase() || "";
+
+  if (description.includes("unauthorized_access") || ttp.includes("unauthorized_access")) {
+    return "Critical";
+  }
+  if (description.includes("malicious") || ttp.includes("dos")) {
+    return "High";
+  }
+  if (description.includes("normal")) {
+    return "Low";
+  }
+
+  return "Medium"; // default fallback
+};
+
+
+
+const Table = () => {
+  const [data, setData] = useState([]);
+
+  useEffect(() => {
+    // Fetch data from the backend API (incidents)
+    axios
+      .get("http://192.168.126.87:5000/api/incidents")
+      .then((response) => {
+        console.log("Fetched data: ", response.data); // Add a log to see the fetched data
+     setData(
+  response.data.map((alert) => ({
+    ...alert,
+    severity: inferSeverity(alert),
+  }))
+);
+
+
+      })
+      .catch((error) => {
+        console.error("Error fetching data: ", error);
+      });
+  }, []);
+
+  // Function to convert alert to STIX format
+  const convertToStix = (alert) => {
+    return {
+      type: 'bundle',
+      id: `bundle--${alert.flowID}`,
+      spec_version: '2.0',
+      objects: [
+        {
+          type: 'indicator',
+          id: `indicator--${alert.flowID}`,
+          name: `Flow ID: ${alert.flowID}`,
+          description: alert.attack_type,
+          pattern: `[ipv4-addr:value = '${alert.flow_features["Src IP"]}']`,
+          valid_from: alert.timestamp,
+          created: alert.timestamp,
+          modified: alert.timestamp,
+        },
+        {
+          type: 'attack-pattern',
+          id: `attack-pattern--${alert.flowID}`,
+          name: alert.attack_type,
+          description: 'Attack Pattern Description',
+          external_references: [
+            {
+              source_name: 'mitre-attack',
+              external_id: 'T1234', // Use the appropriate TTP code from MITRE ATT&CK
+            }
+          ]
+        }
+      ]
+    };
+  };
+
+  // Function to handle TTP button click
+  const handleTtpClick = useCallback((rawData) => {
+    // Convert the raw data (JSON) to STIX format
+    const alert = JSON.parse(rawData);
+    const stixData = convertToStix(alert); // Convert to STIX format
+
+    // Open the STIX data in a new tab
+    openStixAlertInNewTab(stixData);
+  }, []);
+
+  // Function to open STIX alert data in a new tab
+  const openStixAlertInNewTab = (stixData) => {
+    const newTab = window.open();
+    newTab.document.write("<pre>" + JSON.stringify(stixData, null, 2) + "</pre>");
+    newTab.document.close();
+  };
+
+  // Define columns for the table
+  const columns = React.useMemo(
+    () => [
+      {
+        Header: "Incident ID", // New column for Incident ID
+        accessor: "id", // The "id" will be the Flow ID
+      },
+      {
+        Header: "Timestamp",
+        accessor: "timestamp",
+      },
+      {
+        Header: "Description",
+        accessor: "description",
+      },
+      {
+        Header: "TTP",
+        accessor: "ttp",
+        Cell: ({ row }) => (
+          <button
+            onClick={() => handleTtpClick(row.original.rawData)} // Convert raw data to STIX and open in new tab
+          >
+            TTP
+          </button>
+        ),
+      },
+
+
+      {
+  Header: "XAI",
+  accessor: "xai", // un nom factice pour satisfaire React Table
+  Cell: ({ row }) => {
+    const handleXaiClick = () => {
+      try {
+        const frame = JSON.parse(row.original.rawData); // extraire les features
+        const formData = new FormData();
+        formData.append("model_name", "ai4fids_model_v1");
+        formData.append("data", JSON.stringify(frame));
+
+        axios
+          .post("http://192.168.126.67:8080/api/analysis/web/ai4cyber", formData, {
+            headers: {
+              "content-type": "multipart/form-data",
+            },
+          })
+          .then((response) => {
+            window.open(response.data, "_blank");
+          })
+          .catch((error) => {
+            console.error("Erreur XAI:", error);
+            alert("Impossible de contacter le module XAI.");
+          });
+      } catch (err) {
+        console.error("Erreur JSON :", err);
+        alert("Format de données invalide");
+      }
+    };
+
+    return <button onClick={handleXaiClick}>XAI</button>;
+  },
+},
+      {
+        Header: "Raw Data",
+        accessor: "rawData",
+        Cell: ({ value }) => (
+          <button onClick={() => openRawDataInNewTab(value)}>View JSON</button>
+        ),
+      },
+    ],
+    [handleTtpClick] // Adding `handleTtpClick` as a dependency
+  );
+
+  const { getTableProps, getTableBodyProps, headerGroups, rows, prepareRow } = useTable({
+    columns,
+    data,
+  });
+
+  // Function to open raw data in a new tab
+  const openRawDataInNewTab = (rawData) => {
+    const newTab = window.open();
+    newTab.document.write("<pre>" + JSON.stringify(JSON.parse(rawData), null, 2) + "</pre>");
+    newTab.document.close();
+  };
+
+  return (
+    <div className="table-container">
+      <table {...getTableProps()} className="table">
+        <thead>
+          {headerGroups.map((headerGroup) => (
+            <tr {...headerGroup.getHeaderGroupProps()}>
+              {headerGroup.headers.map((column) => (
+                <th {...column.getHeaderProps()}>{column.render("Header")}</th>
+              ))}
+            </tr>
+          ))}
+        </thead>
+        <tbody {...getTableBodyProps()}>
+          {rows.map((row) => {
+            prepareRow(row);
+            return (
+              <tr {...row.getRowProps()}>
+                {row.cells.map((cell) => {
+                  return <td {...cell.getCellProps()}>{cell.render("Cell")}</td>;
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+export default Table;
