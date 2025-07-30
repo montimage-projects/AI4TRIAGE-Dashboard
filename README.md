@@ -1,3 +1,7 @@
+### Install node-modules:
+```bash
+  npm install
+```
 ### Start the backend: 
 ```bash
   cd backend
